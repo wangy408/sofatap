@@ -32,11 +32,21 @@ final class ReceiverController: NSObject, ObservableObject {
     private var stopUnconfirmed = false
     let profiles = ReceiverProfiles()
     private var profileSubscription: AnyCancellable?
+    private var workspaceObservations: [ReceiverWorkspaceObservation] = []
 
     override init() {
         super.init()
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservations = [
+            ReceiverWorkspaceObservation(center: center, name: NSWorkspace.willSleepNotification) { [weak self] _ in
+                // The observer queue is explicitly main; process the notification
+                // synchronously rather than enqueueing a later actor task.
+                MainActor.assumeIsolated { self?.willSleep() }
+            },
+            ReceiverWorkspaceObservation(center: center, name: NSWorkspace.didWakeNotification) { [weak self] _ in
+                MainActor.assumeIsolated { self?.didWake() }
+            }
+        ]
         profileSubscription = profiles.$activeProfile.sink { [weak self] profile in
             self?.sendData(profile.command)
         }
@@ -247,7 +257,7 @@ final class ReceiverController: NSObject, ObservableObject {
         recoveryTask = nil
     }
 
-    @objc private func willSleep() {
+    private func willSleep() {
         isSleeping = true
         recovery.isSleeping = true
         watchdog?.cancel()
@@ -255,7 +265,7 @@ final class ReceiverController: NSObject, ObservableObject {
         cancelRecovery()
     }
 
-    @objc private func didWake() {
+    private func didWake() {
         isSleeping = false
         recovery.isSleeping = false
         if isStopping, let child = process {
@@ -473,4 +483,20 @@ final class ReceiverController: NSObject, ObservableObject {
         process?.terminationHandler = nil
         process = nil
     }
+}
+
+/// Owns only a NotificationCenter registration, not actor-isolated UI state.
+/// Its ordinary deinit can unregister safely even if the controller's final
+/// reference is released off the main actor. The handler captures the controller weakly.
+private final class ReceiverWorkspaceObservation {
+    private let center: NotificationCenter
+    private let token: NSObjectProtocol
+
+    init(center: NotificationCenter, name: Notification.Name,
+         handler: @escaping @Sendable (Notification) -> Void) {
+        self.center = center
+        token = center.addObserver(forName: name, object: nil, queue: .main, using: handler)
+    }
+
+    deinit { center.removeObserver(token) }
 }
