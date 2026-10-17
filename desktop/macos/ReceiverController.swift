@@ -10,7 +10,7 @@ import Foundation
 
 /// All UI state lives on the main actor. Pipe readers and the writer run independently of AppKit.
 @MainActor
-final class ReceiverController: ObservableObject {
+final class ReceiverController: NSObject, ObservableObject {
     @Published private(set) var state: ReceiverState?
     @Published var selectedHost: String?
     @Published private(set) var failure: String?
@@ -23,10 +23,20 @@ final class ReceiverController: ObservableObject {
     @Published private(set) var isPaused = false
     @Published private(set) var isPausing = false
     @Published private(set) var exportNotice: String?
+    @Published private(set) var isRestarting = false
+    @Published private(set) var isSleeping = false
+    @Published private(set) var recoveryNotice: String?
+    private var recovery = ReceiverRecoveryPolicy()
+    private var recoveryTask: Task<Void, Never>?
+    private var restartAfterWake = false
+    private var stopUnconfirmed = false
     let profiles = ReceiverProfiles()
     private var profileSubscription: AnyCancellable?
 
-    init() {
+    override init() {
+        super.init()
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
         profileSubscription = profiles.$activeProfile.sink { [weak self] profile in
             self?.sendData(profile.command)
         }
@@ -41,6 +51,8 @@ final class ReceiverController: ObservableObject {
     }
 
     var statusLabel: String {
+        if isSleeping { return "Mac 正在睡眠 · 唤醒后重新检查" }
+        if isRestarting { return "正在重新连接接收组件…" }
         if isPausing { return "正在暂停…" }
         if isPaused { return "已暂停 · 不接收输入" }
         if isStopping { return "正在停止…" }
@@ -52,11 +64,15 @@ final class ReceiverController: ObservableObject {
         return state.connected ? "手机已连接" : "等待手机连接"
     }
 
+    var canTogglePause: Bool { !isPausing && !isSleeping && !recovery.isQuitting }
+
     func togglePause() {
-        guard !isStarting, !isStopping, !isPausing else { return }
+        guard canTogglePause else { return }
         if isPaused { isPaused = false; start(); return }
         isPausing = true
-        stop { [weak self] stopped in
+        cancelRecovery()
+        recovery.requestStop()
+        stopReceiver { [weak self] stopped in
             self?.isPausing = false
             self?.isPaused = stopped
         }
@@ -95,7 +111,15 @@ final class ReceiverController: ObservableObject {
     }
 
     func start() {
-        guard process == nil, !isStopping else { return }
+        guard process == nil, !isStopping, !isSleeping else { return }
+        cancelRecovery()
+        recovery.requestStart()
+        recoveryNotice = nil
+        launch()
+    }
+
+    private func launch() {
+        guard recovery.permitsLaunch(helperPresent: process != nil, stopping: isStopping) else { return }
         let id = UUID()
         generation = id
         state = nil
@@ -154,6 +178,7 @@ final class ReceiverController: ObservableObject {
         } catch {
             cleanUp()
             fail("无法启动 Mac 接收组件。请确认安装完整，并检查是否已打开另一个 Sofatap。")
+            scheduleRecovery()
             return
         }
         // Only the child owns these ends after launch; close our copies so EOF is observable.
@@ -196,8 +221,77 @@ final class ReceiverController: ObservableObject {
     }
 
     func refresh() {
-        guard !isPaused, !isPausing else { return }
+        guard !isPaused, !isPausing, !isStopping, !isRestarting, !isSleeping else { return }
         if process == nil { start() } else { send(.refresh) }
+    }
+
+    /// Restart only our child, with the normal quit protocol and verified exit.
+    func restartReceiver() {
+        guard !isPaused, !isPausing, !isStarting, !isStopping, !isRestarting, !isSleeping else { return }
+        cancelRecovery()
+        recovery.requestStart()
+        isRestarting = true
+        recoveryNotice = "重启会断开手机；完成后请重新连接。网络地址或身份变化时，可能需要重新扫码配对。"
+        stopReceiver { [weak self] stopped in
+            guard let self else { return }
+            self.isRestarting = false
+            if stopped {
+                if self.isSleeping { self.restartAfterWake = true }
+                else { self.launch() }
+            }
+        }
+    }
+
+    private func cancelRecovery() {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+    }
+
+    @objc private func willSleep() {
+        isSleeping = true
+        recovery.isSleeping = true
+        watchdog?.cancel()
+        stopTask?.cancel()
+        cancelRecovery()
+    }
+
+    @objc private func didWake() {
+        isSleeping = false
+        recovery.isSleeping = false
+        if isStopping, let child = process {
+            scheduleStopTimeout(child: child, id: generation)
+        } else if let child = process {
+            if child.isRunning {
+                guard !stopUnconfirmed else { return }
+                send(.refresh)
+                scheduleWatchdog(id: generation, seconds: 15)
+            } else { didExit(id: generation) }
+        } else if restartAfterWake {
+            restartAfterWake = false
+            launch()
+        } else {
+            scheduleRecovery()
+        }
+    }
+
+    private func scheduleRecovery() {
+        guard recoveryTask == nil, process == nil, !isStopping, !isPaused, !isPausing,
+              recovery.permitsRecovery else { return }
+        guard recovery.attempts < ReceiverRecoveryPolicy.maximumAttempts else {
+            recoveryNotice = "已停止自动恢复（3 次）。请检查安装与网络后，手动重启接收组件。"
+            return
+        }
+        let attempt = recovery.attempts + 1
+        recoveryNotice = "正在尝试恢复接收组件（\(attempt)/\(ReceiverRecoveryPolicy.maximumAttempts)）。手机可能需要重新连接；若网络发生变化，请重新扫码。"
+        let id = generation
+        recoveryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(attempt * 2), clock: .suspending)
+            guard !Task.isCancelled, let self, self.generation == id else { return }
+            self.recoveryTask = nil
+            guard self.recovery.permitsLaunch(helperPresent: self.process != nil, stopping: self.isStopping),
+                  self.recovery.takeRecoveryAttempt() != nil else { return }
+            self.launch()
+        }
     }
 
     func requestAccess() {
@@ -215,7 +309,7 @@ final class ReceiverController: ObservableObject {
         _ = AXIsProcessTrustedWithOptions(options)
         #endif
         accessRequested = true
-        accessNotice = "请在系统提示中打开设置，并允许 Sofatap Receiver。若没有出现提示，可点“打开系统设置”；列表中没有应用时，点 + 选择已安装的 Sofatap Receiver.app。"
+        accessNotice = "请打开系统设置 → 隐私与安全 → 辅助功能，添加并允许当前实际安装的 Sofatap Receiver.app。Development 版更新或重新签名后，旧条目可能仍显示开启却不再生效：请手动移除旧条目，用 + 重新添加当前应用，再退出并重新打开 Sofatap。随后以此处的接收组件权限检查为准。"
         // Leave the asynchronous system prompt in front. Do not concurrently ask
         // the helper to open Settings. Its periodic permission preflight remains the
         // authority for whether real input is available.
@@ -245,27 +339,50 @@ final class ReceiverController: ObservableObject {
 
     /// Never terminate an unrelated process. If this child does not exit, keep the UI alive to retry.
     func stop(completion: @escaping (Bool) -> Void) {
-        guard !isStopping else { return }
+        cancelRecovery()
+        recovery.requestStop(quitting: true)
+        restartAfterWake = false
+        stopReceiver { [weak self] stopped in
+            // A failed Quit leaves the app open. Keep automatic restart disabled,
+            // but let the user retry Pause or Quit without first restarting input.
+            if !stopped { self?.recovery.requestStop() }
+            completion(stopped)
+        }
+    }
+
+    private func stopReceiver(completion: @escaping (Bool) -> Void) {
+        if isStopping {
+            let previous = stopCompletion
+            stopCompletion = { stopped in previous?(stopped); completion(stopped) }
+            return
+        }
         guard let child = process, child.isRunning else { cleanUp(); completion(true); return }
         isStopping = true
+        stopUnconfirmed = false
         stopCompletion = completion
         state = nil
         selectedHost = nil
         watchdog?.cancel()
         send(.quit)
+        scheduleStopTimeout(child: child, id: generation)
+    }
+
+    private func scheduleStopTimeout(child: Process, id: UUID) {
+        stopTask?.cancel()
         stopTask = Task { [weak self, child] in
-            try? await Task.sleep(for: .milliseconds(800))
-            guard !Task.isCancelled, let self, self.isStopping else { return }
+            try? await Task.sleep(for: .milliseconds(800), clock: .suspending)
+            guard !Task.isCancelled, let self, self.generation == id, self.isStopping, !self.isSleeping else { return }
             if child.isRunning { child.terminate() }
-            try? await Task.sleep(for: .seconds(4))
-            guard !Task.isCancelled, self.isStopping else { return }
+            try? await Task.sleep(for: .seconds(4), clock: .suspending)
+            guard !Task.isCancelled, self.generation == id, self.isStopping, !self.isSleeping else { return }
             if child.isRunning {
                 self.isStopping = false
+                self.stopUnconfirmed = true
                 self.fail("接收组件尚未停止，仍可能接收手机输入。请先在手机端断开连接，再稍后重试暂停或退出。")
                 let callback = self.stopCompletion
                 self.stopCompletion = nil
                 callback?(false)
-            } else { self.didExit(id: self.generation) }
+            } else { self.didExit(id: id) }
         }
     }
 
@@ -279,38 +396,50 @@ final class ReceiverController: ObservableObject {
     }
 
     private func receive(_ update: ReceiverState, id: UUID) {
-        guard id == generation, process?.isRunning == true, !isStopping else { return }
+        guard id == generation, process?.isRunning == true, !isStopping, !stopUnconfirmed else { return }
         selectedHost = update.selectedHost(preserving: selectedHost)
         state = update
+        recovery.receivedState()
+        recoveryNotice = nil
         failure = nil
         isStarting = false
         scheduleWatchdog(id: id)
     }
 
-    private func scheduleWatchdog(id: UUID) {
+    private func scheduleWatchdog(id: UUID, seconds: Int = 8) {
         watchdog?.cancel()
+        guard !isSleeping else { return }
         watchdog = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled, let self, self.generation == id, !self.isStopping else { return }
+            try? await Task.sleep(for: .seconds(seconds), clock: .suspending)
+            guard !Task.isCancelled, let self, self.generation == id, !self.isStopping, !self.isSleeping else { return }
             self.pipeFailed(id: id)
         }
     }
 
     private func pipeFailed(id: UUID) {
-        guard id == generation, process != nil, !isStopping else { return }
-        fail("与 Mac 接收组件的连接已中断。请重新打开 Sofatap。")
-        if process?.isRunning == true { process?.terminate() }
+        guard id == generation, process != nil, !isStopping, !stopUnconfirmed else { return }
+        fail("与 Mac 接收组件的连接已中断。正在安全停止接收组件。")
+        stopReceiver { [weak self] stopped in
+            guard let self else { return }
+            if stopped {
+                self.fail("接收组件已停止。自动恢复次数有限；若未恢复，请点“重启接收组件”。")
+                if !self.isSleeping { self.scheduleRecovery() }
+            }
+        }
     }
 
     private func didExit(id: UUID) {
-        guard id == generation, process != nil else { return }
+        guard id == generation, let child = process, !child.isRunning else { return }
         let wasStopping = isStopping
         let callback = stopCompletion
         stopCompletion = nil
         cleanUp()
         isStopping = false
         if wasStopping { callback?(true) }
-        else { fail(failure ?? "Mac 接收组件已停止。请重新检查，或退出后再打开 Sofatap。") }
+        else {
+            fail(failure ?? "Mac 接收组件已停止。若未恢复，请点“重启接收组件”。")
+            scheduleRecovery()
+        }
     }
 
     private func fail(_ message: String) {
@@ -322,6 +451,8 @@ final class ReceiverController: ObservableObject {
     }
 
     private func cleanUp() {
+        stopUnconfirmed = false
+        isStarting = false
         generation = UUID()
         watchdog?.cancel()
         stopTask?.cancel()

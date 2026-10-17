@@ -159,7 +159,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !receiver.isStopping else { return .terminateCancel }
+        guard !isTerminating else { return .terminateCancel }
         isTerminating = true
         receiver.stop { [weak self] stopped in
             // Reply on the next main-loop turn, after AppKit receives terminateLater.
@@ -444,7 +444,7 @@ struct ReceiverContent: View {
             Label("允许 Sofatap 操作 Mac", systemImage: "hand.raised")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Palette.text)
-            Text(accessNotice ?? "需要辅助功能权限才能控制鼠标和输入文字。请在系统提示中允许 Sofatap Receiver。")
+            Text(accessNotice ?? "需要辅助功能权限才能控制鼠标和输入文字。请允许当前安装的 Sofatap Receiver.app。若 Development 版更新后开关已开启却仍无权限，请移除旧条目，用 + 重新添加当前应用，再退出并重新打开。")
                 .font(.system(size: 12))
                 .foregroundStyle(Palette.muted)
                 .lineSpacing(3)

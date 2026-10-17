@@ -119,7 +119,7 @@ Add `-D SOFATAP_MAC_APP_STORE` to the offscreen appearance-fixture command to in
 
 ## Mac control center
 
-The menu bar remains visible while the pairing window is hidden. Pause sends the existing private quit command and is only reported as paused after the owned helper exits. This releases owned inputs and closes the listener. Resume starts a fresh helper using the same existing credential profile; reconnect the phone if necessary. Quit during an in-progress stop is cancelled until that stop finishes. A stale or failed state pipe now terminates the owned helper rather than leaving input active behind an unavailable UI.
+The menu bar remains visible while the pairing window is hidden. Pause sends the existing private quit command and is only reported as paused after the owned helper exits. This releases owned inputs and closes the listener. Resume starts a fresh helper using the same existing credential profile; reconnect the phone if necessary. Pause and Quit cancel pending recovery, including an in-progress restart; their completion waits for the same owned child to exit. A stale or failed state pipe sends the existing graceful quit command, then terminates only that child if needed. An unconfirmed stop keeps the child reference and shows a warning; no second helper is launched.
 
 Application profiles use NSWorkspace's frontmost application notification. Edit the last external foreground application or the default profile. Settings persist locally in the receiver's UserDefaults only, are limited to 128 bundle identifiers, and constrain pointer/scroll multipliers to 0.25–4. They affect only MacInput's received movements and scrolls; physical input, global settings, phone commands and credentials are unchanged. Unknown applications use the default. Application switching and private-pipe delivery are asynchronous, so an input racing a foreground change may use the preceding profile.
 
@@ -136,3 +136,23 @@ dotnet run --project tests/host/SofaTap.Host.Tests.csproj
 ```
 
 Manual acceptance remains necessary with the installed signed app: hold/release a remote drag while pausing, confirm the listener stops, resume with the existing phone pairing, revoke permission, close/reopen the window, switch between two foreground applications and verify physical mouse settings remain unchanged. Do not perform live input tests on a shared desktop without isolated targets. CI compilation and fake-sink checks do not establish physical input or signing/notarization acceptance.
+
+
+## Development permission guidance and receiver recovery
+
+The connection/permission panel and menu bar offer **Restart receiver**. This disconnects the phone, uses the existing quit protocol, and waits for verified helper exit before launching a replacement. Repeated clicks are disabled during stop/start. The latest active Mac input profile is sent to the replacement; phone input is never buffered or replayed by the UI.
+
+Unexpected exit or pipe failure can trigger at most three automatic attempts (2, 4, then 6 seconds), only if the receiver previously reported a valid state and the user has not paused or quit. A new helper's first status does not refill this budget. Explicit Start/Resume or Restart resets it. Permission-blocked and locked-desktop states are valid transport states, not reasons to restart or claim permission is ready. Startup failure before any valid state requires an explicit retry.
+
+Sleep cancels pending watchdog/retry/stop timers. Wake starts fresh timers (15 seconds for the initial state watchdog), continues any already-requested stop, or resumes eligible recovery. Suspended time is not counted by these timers. Sleep/wake never overrides Pause or Quit. Network address/identity changes can still require reconnecting or rescanning the pairing QR; authentication and certificate pinning are unchanged.
+
+For a Development build whose Accessibility entry is enabled but ineffective after app replacement/re-signing, the UI explains how the user can remove the stale entry, add the actual installed app again, and quit/relaunch. This is guidance only: the app does not reset TCC, change macOS permissions, or override helper-reported readiness.
+
+Pure recovery policy checks:
+
+```sh
+swiftc -parse-as-library -swift-version 6 desktop/macos/ReceiverRecoveryPolicy.swift desktop/macos/tests/ReceiverRecoveryPolicyTests.swift -o /tmp/Sofatap-RecoveryTests
+/tmp/Sofatap-RecoveryTests
+```
+
+Manual acceptance with the installed app still needs: repeated Restart clicks; Pause/Quit during restart; a helper that ignores graceful quit and termination (no replacement may launch); three crash/recovery attempts; sleep during each retry/stop stage; wake while paused; and restored permission on the actual installed Development app. Run with dry-run input where possible. Cloud policy checks do not establish physical Mac input, sleep delivery, or TCC behavior.

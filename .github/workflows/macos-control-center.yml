@@ -2,7 +2,7 @@ name: Mac control center cloud build
 
 on:
   push:
-    branches: ['feat/macos-control-center']
+    branches: ['feat/macos-control-center', 'feat/macos-development-recovery']
   workflow_dispatch:
 
 permissions:
@@ -41,6 +41,10 @@ jobs:
           "$RUNNER_TEMP/protocol-tests"
           swiftc -parse-as-library -swift-version 6 desktop/macos/ReceiverProtocol.swift desktop/macos/ReceiverPipeReader.swift desktop/macos/tests/ReceiverPipeTests.swift -o "$RUNNER_TEMP/pipe-tests"
           "$RUNNER_TEMP/pipe-tests"
+      - name: Receiver recovery policy without helper or OS mutations
+        run: |
+          swiftc -parse-as-library -swift-version 6 desktop/macos/ReceiverRecoveryPolicy.swift desktop/macos/tests/ReceiverRecoveryPolicyTests.swift -o "$RUNNER_TEMP/recovery-tests"
+          "$RUNNER_TEMP/recovery-tests"
       - name: Control profiles and redacted diagnostic export
         run: |
           swiftc -parse-as-library -swift-version 6 desktop/macos/ReceiverControlModels.swift desktop/macos/tests/ReceiverControlModelsTests.swift -o "$RUNNER_TEMP/control-model-tests"
@@ -61,24 +65,26 @@ jobs:
           test -f "$stage/LICENSE"
           test -f "$stage/THIRD-PARTY-NOTICES.md"
           codesign --verify --deep --strict --verbose=2 "$stage/Sofatap Receiver.app"
-          printf '%s\n' 'Development build: ad-hoc signed, not Developer ID signed or notarized.' 'macOS 15 or newer, Apple silicon only. Physical input has not been verified in CI.' 'Uses the existing app name and bundle identity. Replacing an installed copy can reuse its existing settings and pairing credentials; preserve the installed copy before replacement.' 'An existing Accessibility grant may not survive re-signing; permissions are managed by macOS and are never changed by this build.' 'This package does not disable or bypass Gatekeeper or request Accessibility access.' > "$stage/DEVELOPMENT-BUILD.txt"
+          printf '%s\n' 'Development build: ad-hoc signed, not Developer ID signed or notarized.' 'macOS 15 or newer, Apple silicon only. Physical input has not been verified in CI.' 'Uses the existing app name and bundle identity. Replacing an installed copy can reuse its existing settings and pairing credentials; preserve the installed copy before replacement.' 'An existing Accessibility grant may not survive re-signing. If enabled but ineffective, manually remove the old entry, re-add this installed app, then relaunch. This build never changes system permissions.' 'Recovery changes: bounded prior-active helper recovery, sleep/wake-aware watchdog, explicit safe receiver restart. Network identity changes may require pairing again.' 'No real-device sleep/wake, iPhone input, or Accessibility acceptance has been performed in CI.' 'This package does not disable or bypass Gatekeeper or request Accessibility access.' > "$stage/DEVELOPMENT-BUILD.txt"
           ln -s /Applications "$stage/Applications"
           df -h "$RUNNER_TEMP" artifacts
           du -sh "$stage"
-          hdiutil create -size 512m -fs HFS+ -volname "SofaTap Development" -srcfolder "$stage" -format UDZO artifacts/SofaTap-macOS-arm64-development.dmg
-          hdiutil verify artifacts/SofaTap-macOS-arm64-development.dmg
+          hdiutil create -size 512m -fs HFS+ -volname "SofaTap Development" -srcfolder "$stage" -format UDZO artifacts/SofaTap-macOS-arm64-development-recovery.dmg
+          hdiutil verify artifacts/SofaTap-macOS-arm64-development-recovery.dmg
           cp "$stage/BUILD-MANIFEST.json" artifacts/BUILD-MANIFEST.json
           cp "$stage/DEVELOPMENT-BUILD.txt" artifacts/DEVELOPMENT-BUILD.txt
           cd artifacts
-          shasum -a 256 SofaTap-macOS-arm64-development.dmg > SofaTap-macOS-arm64-development.dmg.sha256
-          shasum -a 256 -c SofaTap-macOS-arm64-development.dmg.sha256
+          shasum -a 256 SofaTap-macOS-arm64-development-recovery.dmg > SofaTap-macOS-arm64-development-recovery.dmg.sha256
+          shasum -a 256 -c SofaTap-macOS-arm64-development-recovery.dmg.sha256
+          cat SofaTap-macOS-arm64-development-recovery.dmg.sha256
+          cat BUILD-MANIFEST.json
       - name: Upload development artifact, no public release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: sofatap-macos-arm64-development
+          name: sofatap-macos-arm64-development-recovery
           path: |
-            artifacts/SofaTap-macOS-arm64-development.dmg
-            artifacts/SofaTap-macOS-arm64-development.dmg.sha256
+            artifacts/SofaTap-macOS-arm64-development-recovery.dmg
+            artifacts/SofaTap-macOS-arm64-development-recovery.dmg.sha256
             artifacts/BUILD-MANIFEST.json
             artifacts/DEVELOPMENT-BUILD.txt
           if-no-files-found: error

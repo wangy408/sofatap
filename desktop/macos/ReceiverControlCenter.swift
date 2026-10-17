@@ -34,7 +34,9 @@ final class ReceiverStatusItem: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         add(menu, "打开配对与设置", #selector(showWindow))
         let pause = add(menu, receiver.isPaused ? "恢复接收" : "暂停接收", #selector(togglePause))
-        pause.isEnabled = !receiver.isStarting && !receiver.isStopping && !receiver.isPausing
+        pause.isEnabled = receiver.canTogglePause
+        let restart = add(menu, "重启接收组件", #selector(restartReceiver))
+        restart.isEnabled = !receiver.isStarting && !receiver.isPaused && !receiver.isPausing && !receiver.isStopping && !receiver.isRestarting && !receiver.isSleeping
         add(menu, "导出脱敏诊断…", #selector(export))
         menu.addItem(.separator())
         add(menu, "退出 Sofatap", #selector(quit))
@@ -47,6 +49,7 @@ final class ReceiverStatusItem: NSObject, NSMenuDelegate {
     }
     @objc private func showWindow() { open() }
     @objc private func togglePause() { receiver.togglePause() }
+    @objc private func restartReceiver() { receiver.restartReceiver() }
     @objc private func export() { open(); receiver.exportDiagnostics() }
     @objc private func quit() { NSApp.terminate(nil) }
 }
@@ -59,8 +62,8 @@ struct ReceiverControlCenter: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(receiver.statusLabel).font(.headline)
             Button(receiver.isPaused ? "恢复接收" : "暂停接收", action: receiver.togglePause)
-                .disabled(receiver.isStarting || receiver.isStopping || receiver.isPausing)
-            Text("暂停会断开手机并停止接收；恢复后可用原配对重新连接。")
+                .disabled(!receiver.canTogglePause)
+            Text("暂停会断开手机并停止接收；恢复后请重新连接。网络地址或身份变化时，可能需要重新扫码。")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
             DisclosureGroup("连接与权限诊断") {
@@ -75,6 +78,11 @@ struct ReceiverControlCenter: View {
                     }
                     Text("这里只测量接收端动作处理时间，不包含手机、网络、屏幕或目标应用响应；不是端到端延迟。")
                     Text("无法连接时，请检查两端是否在可互通的网络、Mac 防火墙是否允许 Sofatap，以及是否有其他接收组件占用端口。这里只提供检查建议，不推断具体原因。")
+                    Button("重启接收组件", action: receiver.restartReceiver)
+                        .disabled(receiver.isStarting || receiver.isPaused || receiver.isPausing || receiver.isStopping || receiver.isRestarting || receiver.isSleeping)
+                    Text("重启前会先停止现有组件。无法确认停止时不会启动第二个组件，也不会更改系统权限。")
+                    if let notice = receiver.recoveryNotice { Text(notice) }
+                    Text("Development 版替换或重新签名后，若辅助功能已开启却仍提示无权限，请在系统设置中移除旧条目，用 + 重新添加实际安装的 Sofatap Receiver.app，再退出并重新打开。")
                     Button("导出脱敏诊断…", action: receiver.exportDiagnostics)
                     Text("不包含配对密钥、二维码、地址、应用标识、输入文字或原始错误。")
                     if let notice = receiver.exportNotice { Text(notice) }
