@@ -45,6 +45,7 @@ final class ReceiverController: ObservableObject {
         if isPaused { return "已暂停 · 不接收输入" }
         if isStopping { return "正在停止…" }
         if isStarting { return "正在启动…" }
+        if failure != nil && process?.isRunning == true { return "接收组件未停止 · 仍可能接收输入" }
         guard let state else { return "接收组件不可用" }
         if state.dryRun { return "测试模式 · 不注入输入" }
         if state.inputStatus != "ready" { return "需要检查输入权限" }
@@ -260,7 +261,7 @@ final class ReceiverController: ObservableObject {
             guard !Task.isCancelled, self.isStopping else { return }
             if child.isRunning {
                 self.isStopping = false
-                self.fail("接收组件尚未退出。请稍后再点“退出 Sofatap”。")
+                self.fail("接收组件尚未停止，仍可能接收手机输入。请先在手机端断开连接，再稍后重试暂停或退出。")
                 let callback = self.stopCompletion
                 self.stopCompletion = nil
                 callback?(false)

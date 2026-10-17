@@ -45,6 +45,10 @@ jobs:
         run: |
           swiftc -parse-as-library -swift-version 6 desktop/macos/ReceiverControlModels.swift desktop/macos/tests/ReceiverControlModelsTests.swift -o "$RUNNER_TEMP/control-model-tests"
           "$RUNNER_TEMP/control-model-tests"
+      - name: Independent privacy and backward-compatibility audit
+        run: |
+          swiftc -parse-as-library -swift-version 6 desktop/macos/ReceiverControlModels.swift desktop/macos/ReceiverProtocol.swift desktop/macos/tests/ReceiverControlAuditTests.swift -o "$RUNNER_TEMP/control-audit-tests"
+          "$RUNNER_TEMP/control-audit-tests"
       - name: Build arm64 receiver with ad-hoc signature
         env:
           SOFATAP_SIGN_IDENTITY: '-'
@@ -57,7 +61,7 @@ jobs:
           test -f "$stage/LICENSE"
           test -f "$stage/THIRD-PARTY-NOTICES.md"
           codesign --verify --deep --strict --verbose=2 "$stage/Sofatap Receiver.app"
-          printf '%s\n' 'Development build: ad-hoc signed, not Developer ID signed or notarized.' 'macOS 15 or newer, Apple silicon only. Physical input has not been verified in CI.' 'This package does not disable or bypass Gatekeeper or request Accessibility access.' > "$stage/DEVELOPMENT-BUILD.txt"
+          printf '%s\n' 'Development build: ad-hoc signed, not Developer ID signed or notarized.' 'macOS 15 or newer, Apple silicon only. Physical input has not been verified in CI.' 'Uses the existing app name and bundle identity. Replacing an installed copy can reuse its existing settings and pairing credentials; preserve the installed copy before replacement.' 'An existing Accessibility grant may not survive re-signing; permissions are managed by macOS and are never changed by this build.' 'This package does not disable or bypass Gatekeeper or request Accessibility access.' > "$stage/DEVELOPMENT-BUILD.txt"
           ln -s /Applications "$stage/Applications"
           hdiutil create -volname "SofaTap Development" -srcfolder "$stage" -format UDZO artifacts/SofaTap-macOS-arm64-development.dmg
           hdiutil verify artifacts/SofaTap-macOS-arm64-development.dmg
