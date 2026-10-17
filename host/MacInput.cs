@@ -14,6 +14,7 @@ public sealed class MacInput : IInputInjector
     private readonly HashSet<uint> _buttons = [];
     private readonly Dictionary<ushort, MacEvent> _keys = [];
     private double _fractionX, _fractionY, _scrollX, _scrollY;
+    private MacInputProfile _profile = new(1, 1, false);
     private int _attempted;
     private uint? _lastClickButton;
     private MacPoint _lastClickPosition;
@@ -41,6 +42,21 @@ public sealed class MacInput : IInputInjector
         if (OperatingSystem.IsMacOS()) QuartzNative.CGRequestPostEventAccess();
     }
 
+    /// <summary>Applies the current local app profile without requesting permission or persisting it.</summary>
+    public void SetProfile(double pointerScale, double scrollScale, bool reverseScroll)
+    {
+        if (!MacInputProfile.ValidScale(pointerScale) || !MacInputProfile.ValidScale(scrollScale))
+            throw new ArgumentOutOfRangeException(nameof(pointerScale), "Profile scales must be finite and between 0.25 and 4.");
+        lock (_gate)
+        {
+            var profile = new MacInputProfile(pointerScale, scrollScale, reverseScroll);
+            if (_profile == profile) return;
+            _profile = profile;
+            // Never carry fractional movement from one application profile into another.
+            _fractionX = 0; _fractionY = 0; _scrollX = 0; _scrollY = 0;
+        }
+    }
+
     public void Apply(ActionMessage action)
     {
         lock (_gate)
@@ -53,7 +69,7 @@ public sealed class MacInput : IInputInjector
                 {
                     case "move":
                         CheckMouseOwnership();
-                        _fractionX += action.Dx; _fractionY += action.Dy;
+                        _fractionX += action.Dx * _profile.PointerScale; _fractionY += action.Dy * _profile.PointerScale;
                         var dx = (int)_fractionX; var dy = (int)_fractionY;
                         if (dx != 0 || dy != 0)
                         {
@@ -69,7 +85,8 @@ public sealed class MacInput : IInputInjector
                         break;
                     case "scroll":
                         ResetClicks();
-                        _scrollX += action.Dx; _scrollY += action.Dy;
+                        var scrollScale = _profile.ScrollScale * (_profile.ReverseScroll ? -1 : 1);
+                        _scrollX += action.Dx * scrollScale; _scrollY += action.Dy * scrollScale;
                         var sx = (int)_scrollX; var sy = (int)_scrollY;
                         if (sx != 0 || sy != 0) Submit(new(MacEventKind.Scroll, DeltaX: sx, DeltaY: sy));
                         _scrollX -= sx; _scrollY -= sy;

@@ -13,6 +13,7 @@ public sealed record ReceiverOptions(bool DryRun, string DataDirectory, int Cont
 public sealed class ReceiverServer(ReceiverOptions options, Credentials credentials, IInputInjector input, ITextFocusProbe? textFocus = null,
     Func<ILiveTextEditor>? textEditorFactory = null)
 {
+    private readonly ReceiverActionDiagnostics? _diagnostics = input is MacInput ? new() : null;
     private readonly SemaphoreSlim _controller = new(1, 1);
     private static readonly JsonSerializerOptions JsonOptions = LiveTextWire.Options;
     private readonly byte[] _token = Encoding.ASCII.GetBytes(credentials.Token);
@@ -115,7 +116,7 @@ public sealed class ReceiverServer(ReceiverOptions options, Credentials credenti
                     var action = Protocol.Parse(bytes);
                     lifetime.Token.ThrowIfCancellationRequested();
                     isPing = action.Type == "ping";
-                    ack = session.Execute(action);
+                    ack = _diagnostics is null ? session.Execute(action) : _diagnostics.Execute(session, action);
                 }
                 catch (ProtocolException error)
                 {
@@ -165,6 +166,10 @@ public sealed class ReceiverServer(ReceiverOptions options, Credentials credenti
     {
         if (!options.DryRun && input is LinuxInput linux) linux.RequestAccess();
     }
+    public void SetMacInputProfile(double pointerScale, double scrollScale, bool reverseScroll)
+    {
+        if (!options.DryRun && input is MacInput mac) mac.SetProfile(pointerScale, scrollScale, reverseScroll);
+    }
     public object NativeState()
     {
         var pairings = LocalAddresses().Select(address =>
@@ -176,7 +181,7 @@ public sealed class ReceiverServer(ReceiverOptions options, Credentials credenti
         }).ToArray();
         return new { type = "state", name = Environment.MachineName, platform = ReceiverPlatform.Id,
             inputStatus = ReceiverPlatform.StatusCode(input, options.DryRun), dryRun = options.DryRun,
-            connected = _controller.CurrentCount == 0, pairings };
+            connected = _controller.CurrentCount == 0, pairings, diagnostics = _diagnostics?.Snapshot() };
     }
     private string[] LocalAddresses()
     {

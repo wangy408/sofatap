@@ -111,6 +111,7 @@ struct ReceiverState: Decodable, Equatable, Sendable {
     let dryRun: Bool
     let connected: Bool
     let pairings: [ReceiverPairing]
+    var diagnostics: ReceiverProcessingDiagnostics? = nil
 
     static func decode(_ data: Data) throws -> ReceiverState {
         guard data.count <= ReceiverLineBuffer.maximumFrameBytes else { throw ReceiverProtocolError.oversizedFrame }
@@ -120,6 +121,13 @@ struct ReceiverState: Decodable, Equatable, Sendable {
               value.inputStatus.utf8.count <= 128, value.pairings.count <= 16,
               Set(value.pairings.map(\.host)).count == value.pairings.count else {
             throw ReceiverProtocolError.invalidState
+        }
+        if let diagnostics = value.diagnostics {
+            guard diagnostics.actionCount >= 0, diagnostics.lastProcessingMs.isFinite,
+                  diagnostics.maxProcessingMs.isFinite, diagnostics.lastProcessingMs >= 0,
+                  diagnostics.maxProcessingMs >= diagnostics.lastProcessingMs else {
+                throw ReceiverProtocolError.invalidState
+            }
         }
         try value.pairings.forEach { try $0.validate() }
         return value
@@ -136,4 +144,10 @@ enum ReceiverCommand: String, Sendable, CaseIterable {
     case refresh, requestAccess, quit
 
     var line: Data { Data("{\"type\":\"\(rawValue)\"}\n".utf8) }
+}
+
+struct ReceiverProcessingDiagnostics: Decodable, Equatable, Sendable {
+    let actionCount: Int64
+    let lastProcessingMs: Double
+    let maxProcessingMs: Double
 }

@@ -30,7 +30,9 @@ public static class NativeDesktopBridge
             {
                 var line = await ReadLine(reader, stopped.Token);
                 if (line is null) break; // Closing the parent UI closes input and ends control.
-                var command = ParseCommand(line);
+                var command = ParseCommand(line, out var profile);
+                if (command == "profile" && OperatingSystem.IsMacOS() && !dryRun && profile is not null)
+                    server.SetMacInputProfile(profile.PointerScale, profile.ScrollScale, profile.ReverseScroll);
                 if (command == "quit") break;
                 if (command == "requestAccess" && OperatingSystem.IsLinux() && !dryRun) server.RequestLinuxAccess();
                 if (command == "requestAccess" && OperatingSystem.IsMacOS() && !dryRun)
@@ -62,8 +64,10 @@ public static class NativeDesktopBridge
             catch (OperationCanceledException) when (stopped.IsCancellationRequested) { }
         }
     }
-    internal static string ParseCommand(string line)
+    internal static string ParseCommand(string line) => ParseCommand(line, out _);
+    internal static string ParseCommand(string line, out MacInputProfile? profile)
     {
+        profile = null;
         try
         {
             using var document = JsonDocument.Parse(line);
@@ -73,6 +77,19 @@ public static class NativeDesktopBridge
                 if (fields.Length == 1 && fields[0].Name == "type" && fields[0].Value.ValueKind == JsonValueKind.String
                     && fields[0].Value.GetString() is "refresh" or "requestAccess" or "quit")
                     return fields[0].Value.GetString()!;
+                // Reject duplicates and unknown fields, including values that overflow to infinity.
+                var root = document.RootElement;
+                if (fields.Length == 4 && fields.Select(field => field.Name).Distinct(StringComparer.Ordinal).Count() == 4
+                    && root.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String && type.GetString() == "profile"
+                    && root.TryGetProperty("pointerScale", out var pointer) && pointer.ValueKind == JsonValueKind.Number
+                    && pointer.TryGetDouble(out var pointerScale) && MacInputProfile.ValidScale(pointerScale)
+                    && root.TryGetProperty("scrollScale", out var scroll) && scroll.ValueKind == JsonValueKind.Number
+                    && scroll.TryGetDouble(out var scrollScale) && MacInputProfile.ValidScale(scrollScale)
+                    && root.TryGetProperty("reverseScroll", out var reverse) && reverse.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                {
+                    profile = new(pointerScale, scrollScale, reverse.GetBoolean());
+                    return "profile";
+                }
             }
         }
         catch (JsonException) { }

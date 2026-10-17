@@ -12,6 +12,7 @@ if (args.Contains("--distribution-only", StringComparer.Ordinal))
     Console.WriteLine($"PASS: {passed} distribution checks (no network or desktop input).");
     return;
 }
+MacInputProfileChecks.Run(Check);
 PairingUriChecks.Run(Check);
 CredentialPersistenceChecks.Run(Check);
 LinuxInputChecks.Run(Check);

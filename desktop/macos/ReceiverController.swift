@@ -20,13 +20,70 @@ final class ReceiverController: ObservableObject {
     @Published private(set) var accessRequested = false
     @Published private(set) var accessNotice: String?
 
+    @Published private(set) var isPaused = false
+    @Published private(set) var isPausing = false
+    @Published private(set) var exportNotice: String?
+    let profiles = ReceiverProfiles()
+    private var profileSubscription: AnyCancellable?
+
+    init() {
+        profileSubscription = profiles.$activeProfile.sink { [weak self] profile in
+            self?.sendData(profile.command)
+        }
+    }
+
+    var controlStatus: String {
+        if isPausing { return "pausing" }
+        if isPaused { return "paused" }
+        if isStopping { return "stopping" }
+        if isStarting { return "starting" }
+        return state == nil ? "unavailable" : "running"
+    }
+
+    var statusLabel: String {
+        if isPausing { return "正在暂停…" }
+        if isPaused { return "已暂停 · 不接收输入" }
+        if isStopping { return "正在停止…" }
+        if isStarting { return "正在启动…" }
+        guard let state else { return "接收组件不可用" }
+        if state.dryRun { return "测试模式 · 不注入输入" }
+        if state.inputStatus != "ready" { return "需要检查输入权限" }
+        return state.connected ? "手机已连接" : "等待手机连接"
+    }
+
+    func togglePause() {
+        guard !isStarting, !isStopping, !isPausing else { return }
+        if isPaused { isPaused = false; start(); return }
+        isPausing = true
+        stop { [weak self] stopped in
+            self?.isPausing = false
+            self?.isPaused = stopped
+        }
+    }
+
+    func exportDiagnostics() {
+        let timing = state?.diagnostics
+        do {
+            let data = try ReceiverDiagnosticExport.data(status: controlStatus, inputStatus: state?.inputStatus,
+                connected: state?.connected ?? false, dryRun: state?.dryRun ?? false,
+                interfaceCount: state?.pairings.count ?? 0, processingCount: timing?.actionCount,
+                lastMilliseconds: timing?.lastProcessingMs, maximumMilliseconds: timing?.maxProcessingMs)
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = "Sofatap-diagnostics.json"
+            panel.canCreateDirectories = true
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try data.write(to: url, options: .atomic)
+            exportNotice = "已导出脱敏诊断。"
+        } catch { exportNotice = "无法保存诊断，请选择可写入的位置。" }
+    }
+
     private var process: Process?
     private var generation = UUID()
     private var pipes: [Pipe] = []
     private var pipeReaders: [ReceiverPipeReader] = []
     private var stateReader: Task<Void, Never>?
     private var writer: Task<Void, Never>?
-    private var commandStream: AsyncStream<ReceiverCommand>.Continuation?
+    private var commandStream: AsyncStream<Data>.Continuation?
     private var watchdog: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
     private var copyTask: Task<Void, Never>?
@@ -103,14 +160,14 @@ final class ReceiverController: ObservableObject {
         try? output.fileHandleForWriting.close()
         try? errors.fileHandleForWriting.close()
 
-        let (commands, continuation) = AsyncStream<ReceiverCommand>.makeStream(bufferingPolicy: .bufferingOldest(16))
+        let (commands, continuation) = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingOldest(16))
         commandStream = continuation
         let stdin = input.fileHandleForWriting
         writer = Task.detached { [weak self] in
             do {
                 for await command in commands {
                     if Task.isCancelled { return }
-                    try stdin.write(contentsOf: command.line)
+                    try stdin.write(contentsOf: command)
                 }
             } catch {
                 await self?.pipeFailed(id: id)
@@ -133,10 +190,12 @@ final class ReceiverController: ObservableObject {
             pipeFailed(id: id)
             return
         }
+        sendData(profiles.activeProfile.command)
         scheduleWatchdog(id: id)
     }
 
     func refresh() {
+        guard !isPaused, !isPausing else { return }
         if process == nil { start() } else { send(.refresh) }
     }
 
@@ -209,10 +268,12 @@ final class ReceiverController: ObservableObject {
         }
     }
 
-    private func send(_ command: ReceiverCommand) {
+    private func send(_ command: ReceiverCommand) { sendData(command.line) }
+
+    private func sendData(_ data: Data) {
         guard let commandStream else { return }
-        if case .dropped = commandStream.yield(command) {
-            fail("接收组件暂时没有响应。请稍后重新检查。")
+        if case .dropped = commandStream.yield(data) {
+            pipeFailed(id: generation)
         }
     }
 
@@ -230,7 +291,7 @@ final class ReceiverController: ObservableObject {
         watchdog = Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
             guard !Task.isCancelled, let self, self.generation == id, !self.isStopping else { return }
-            self.fail("接收组件没有及时响应。请重新检查，或退出后再打开 Sofatap。")
+            self.pipeFailed(id: id)
         }
     }
 

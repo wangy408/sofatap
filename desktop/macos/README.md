@@ -116,3 +116,23 @@ xcrun swiftc -parse-as-library -swift-version 6 -target arm64-apple-macosx15.0 \
 ```
 
 Add `-D SOFATAP_MAC_APP_STORE` to the offscreen appearance-fixture command to inspect the store capability note and first-run startup confirmation. These fixtures cannot replace real Mac App Store screenshots or physical input acceptance.
+
+## Mac control center
+
+The menu bar remains visible while the pairing window is hidden. Pause sends the existing private quit command and is only reported as paused after the owned helper exits. This releases owned inputs and closes the listener. Resume starts a fresh helper using the same existing credential profile; reconnect the phone if necessary. Quit during an in-progress stop is cancelled until that stop finishes. A stale or failed state pipe now terminates the owned helper rather than leaving input active behind an unavailable UI.
+
+Application profiles use NSWorkspace's frontmost application notification. Edit the last external foreground application or the default profile. Settings persist locally in the receiver's UserDefaults only, are limited to 128 bundle identifiers, and constrain pointer/scroll multipliers to 0.25–4. They affect only MacInput's received movements and scrolls; physical input, global settings, phone commands and credentials are unchanged. Unknown applications use the default. Application switching and private-pipe delivery are asynchronous, so an input racing a foreground change may use the preceding profile.
+
+The private pipe additionally accepts exactly {"type":"profile","pointerScale":1,"scrollScale":1,"reverseScroll":false}. This is not a phone command. Native states may include diagnostics with actionCount, lastProcessingMs and maxProcessingMs. These measure receiver action execution only, not network/phone/display/application response or end-to-end latency. Counts include valid ping/retry/error executions and reset when the helper restarts. Dry-run has no real-input timings.
+
+Diagnostics export is an explicit local Save action. It uses an allowlist and excludes host names, IPs, pairing secrets/URIs/QR, application identifiers, typed text and raw errors. A missing permission or connection is shown independently; network/firewall suggestions are not diagnoses. No automatic permission requests are added.
+
+Additional pure model checks (no UI, helper, network or event injection):
+
+```sh
+xcrun swiftc -parse-as-library -swift-version 6 desktop/macos/ReceiverControlModels.swift desktop/macos/tests/ReceiverControlModelsTests.swift -o /tmp/Sofatap-ControlTests
+/tmp/Sofatap-ControlTests
+dotnet run --project tests/host/SofaTap.Host.Tests.csproj
+```
+
+Manual acceptance remains necessary with the installed signed app: hold/release a remote drag while pausing, confirm the listener stops, resume with the existing phone pairing, revoke permission, close/reopen the window, switch between two foreground applications and verify physical mouse settings remain unchanged. Do not perform live input tests on a shared desktop without isolated targets. CI compilation and fake-sink checks do not establish physical input or signing/notarization acceptance.

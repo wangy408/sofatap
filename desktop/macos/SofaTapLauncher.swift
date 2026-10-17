@@ -43,6 +43,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     private let loginItem: ReceiverLoginItem
     private var window: NSWindow?
     private var isTerminating = false
+    private var statusItem: ReceiverStatusItem?
 
     init(options: ReceiverLaunchOptions) {
         self.options = options
@@ -109,6 +110,12 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+        if options.testDisplayID == nil {
+            statusItem = ReceiverStatusItem(receiver: receiver) { [weak self] in
+                self?.window?.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
         receiver.start()
         loginItem.configureFirstLaunch()
     }
@@ -152,6 +159,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !receiver.isStopping else { return .terminateCancel }
         isTerminating = true
         receiver.stop { [weak self] stopped in
             // Reply on the next main-loop turn, after AppKit receives terminateLater.
@@ -208,6 +216,8 @@ struct ReceiverView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
+                ReceiverControlCenter(receiver: receiver, profiles: receiver.profiles)
+                if !receiver.isPaused && !receiver.isPausing {
                 ReceiverContent(
                     state: receiver.state,
                     selectedPairing: receiver.selectedPairing,
@@ -224,6 +234,7 @@ struct ReceiverView: View {
                     copyPairing: receiver.copyPairing,
                     quit: { NSApp.terminate(nil) }
                 )
+                }
                 if loginItem.isAvailable {
                     Group {
                         if loginItem.needsFirstLaunchConsent {
