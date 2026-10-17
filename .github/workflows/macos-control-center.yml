@@ -63,7 +63,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$stage/Sofatap Receiver.app"
           printf '%s\n' 'Development build: ad-hoc signed, not Developer ID signed or notarized.' 'macOS 15 or newer, Apple silicon only. Physical input has not been verified in CI.' 'Uses the existing app name and bundle identity. Replacing an installed copy can reuse its existing settings and pairing credentials; preserve the installed copy before replacement.' 'An existing Accessibility grant may not survive re-signing; permissions are managed by macOS and are never changed by this build.' 'This package does not disable or bypass Gatekeeper or request Accessibility access.' > "$stage/DEVELOPMENT-BUILD.txt"
           ln -s /Applications "$stage/Applications"
-          hdiutil create -volname "SofaTap Development" -srcfolder "$stage" -format UDZO artifacts/SofaTap-macOS-arm64-development.dmg
+          df -h "$RUNNER_TEMP" artifacts
+          du -sh "$stage"
+          hdiutil create -size 512m -fs HFS+ -volname "SofaTap Development" -srcfolder "$stage" -format UDZO artifacts/SofaTap-macOS-arm64-development.dmg
           hdiutil verify artifacts/SofaTap-macOS-arm64-development.dmg
           cp "$stage/BUILD-MANIFEST.json" artifacts/BUILD-MANIFEST.json
           cp "$stage/DEVELOPMENT-BUILD.txt" artifacts/DEVELOPMENT-BUILD.txt
