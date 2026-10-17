@@ -17,6 +17,12 @@ public sealed class ReceiverServer(ReceiverOptions options, Credentials credenti
     private static readonly JsonSerializerOptions JsonOptions = LiveTextWire.Options;
     private readonly byte[] _token = Encoding.ASCII.GetBytes(credentials.Token);
     private CancellationToken _applicationStopping;
+    // Local native pipe only; never exposed through the phone protocol.
+    internal void SetPointerSpeed(double value)
+    {
+        if (input is MacInput macInput) macInput.SetPointerSpeed(value);
+    }
+
     public WebApplication Build()
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [], ContentRootPath = AppContext.BaseDirectory });

@@ -32,6 +32,12 @@ try
     using var credentials = Credentials.LoadOrCreate(Path.GetFullPath(options.DataDirectory));
     IInputInjector input = dryRun ? new DryRunInput() : OperatingSystem.IsMacOS() ? new MacInput()
         : OperatingSystem.IsLinux() ? new LinuxInput() : new WindowsInput();
+    if (input is MacInput macInput)
+    {
+        var initialSpeed = double.TryParse(Value("--pointer-speed"), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var speed) ? speed : 1;
+        macInput.SetPointerSpeed(initialSpeed);
+    }
     using var inputLifetime = input as IDisposable;
     using var textFocus = ReceiverDistribution.CreateTextFocus(dryRun);
     var textEditorFactory = ReceiverDistribution.CreateTextEditorFactory(dryRun);

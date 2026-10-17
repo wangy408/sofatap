@@ -1,0 +1,107 @@
+name: Mac minimal pointer sensitivity cloud build
+
+on:
+  push:
+    branches: ['feat/macos-pointer-sensitivity']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-pointer-sensitivity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-and-package:
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Install original transport test dependency
+        run: python3 -m pip install websockets==16.0
+      - name: Confirm clean minimal branch provenance
+        run: |
+          git merge-base --is-ancestor 754d22b6f671b034e876d12f7c4ee980749a13d8 HEAD
+          test -z "$(git status --porcelain)"
+          git diff --exit-code 754d22b6f671b034e876d12f7c4ee980749a13d8 -- ios android PROTOCOL.md host/Protocol.cs host/Credentials.cs host/PairingUri.cs host/InputInjector.cs
+      - name: Host regression checks with recording input only
+        run: dotnet run --project tests/host/SofaTap.Host.Tests.csproj -c Release
+      - name: Original TLS and WebSocket integration with fake input
+        run: SOFATAP_DOTNET="$(command -v dotnet)" python3 tests/smoke.py
+      - name: Mac launch and login policy without OS mutations
+        run: |
+          swiftc desktop/macos/ReceiverLaunchOptions.swift desktop/macos/tests/ReceiverLaunchOptionsTests.swift -o "$RUNNER_TEMP/launch-tests"
+          "$RUNNER_TEMP/launch-tests"
+          swiftc -parse-as-library -swift-version 5 desktop/macos/ReceiverLoginItem.swift desktop/macos/tests/ReceiverLoginItemTests.swift -o "$RUNNER_TEMP/login-tests"
+          "$RUNNER_TEMP/login-tests"
+      - name: Mac state and pipe protocol without UI or backend
+        run: |
+          swiftc -parse-as-library -swift-version 5 desktop/macos/ReceiverProtocol.swift desktop/macos/tests/ReceiverProtocolTests.swift -o "$RUNNER_TEMP/protocol-tests"
+          "$RUNNER_TEMP/protocol-tests"
+          swiftc -parse-as-library -swift-version 6 desktop/macos/ReceiverProtocol.swift desktop/macos/ReceiverPipeReader.swift desktop/macos/tests/ReceiverPipeTests.swift -o "$RUNNER_TEMP/pipe-tests"
+          "$RUNNER_TEMP/pipe-tests"
+      - name: Build arm64 receiver with ad-hoc signature
+        env:
+          SOFATAP_SIGN_IDENTITY: '-'
+          SOFATAP_MAC_STAGING: ${{ runner.temp }}/mac-staging
+        run: bash scripts/build-macos.sh arm64
+      - name: Package and verify development DMG
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/mac-staging/SofaTap-macOS-arm64"
+          test -f "$stage/LICENSE"
+          test -f "$stage/THIRD-PARTY-NOTICES.md"
+          codesign --verify --deep --strict --verbose=2 "$stage/Sofatap Receiver.app"
+          printf '%s\n' 'Development build: ad-hoc signed, not Developer ID signed or notarized.' 'macOS 15 or newer, Apple silicon only. Physical input has not been verified in CI.' 'Uses the existing app name and bundle identity. Replacing an installed copy can reuse its existing settings and pairing credentials; preserve the installed copy before replacement.' 'An existing Accessibility grant may not survive re-signing; permissions are managed by macOS and are never changed by this build.' 'This package does not disable or bypass Gatekeeper or request Accessibility access.' > "$stage/DEVELOPMENT-BUILD.txt"
+          cp docs/MAC-POINTER-SENSITIVITY.md "$stage/MAC-POINTER-SENSITIVITY.md"
+          python3 - "$stage" "$GITHUB_SHA" <<'PY'
+          import hashlib, json, pathlib, sys
+          stage = pathlib.Path(sys.argv[1])
+          manifest = json.loads((stage / "BUILD-MANIFEST.json").read_text())
+          assert manifest["sourceRevision"] == sys.argv[2]
+          assert manifest["sourceDirty"] is False
+          assert manifest["signature"] == "ad-hoc" and manifest["notarized"] is False
+          assert manifest["physicalInputVerified"] is False
+          for field, path in (("executableSHA256", "Contents/MacOS/SofaTap"), ("backendSHA256", "Contents/Helpers/SofaTapHost")):
+              assert manifest[field] == hashlib.sha256((stage / "Sofatap Receiver.app" / path).read_bytes()).hexdigest()
+          manifest["variant"] = "minimal-macos-pointer-sensitivity"
+          manifest["upstreamBaseRevision"] = "754d22b6f671b034e876d12f7c4ee980749a13d8"
+          manifest["realDeviceAcceptance"] = "not performed: iOS/iPadOS TestFlight pairing, physical input and macOS TCC"
+          (stage / "BUILD-MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+          ln -s /Applications "$stage/Applications"
+          df -h "$RUNNER_TEMP" artifacts
+          du -sh "$stage"
+          hdiutil create -size 512m -fs HFS+ -volname "Sofatap Minimal Sensitivity" -srcfolder "$stage" -format UDZO artifacts/SofaTap-macOS-arm64-minimal-sensitivity.dmg
+          hdiutil verify artifacts/SofaTap-macOS-arm64-minimal-sensitivity.dmg
+          cp "$stage/BUILD-MANIFEST.json" artifacts/BUILD-MANIFEST.json
+          cp "$stage/DEVELOPMENT-BUILD.txt" artifacts/DEVELOPMENT-BUILD.txt
+          cp "$stage/MAC-POINTER-SENSITIVITY.md" artifacts/MAC-POINTER-SENSITIVITY.md
+          cd artifacts
+          shasum -a 256 SofaTap-macOS-arm64-minimal-sensitivity.dmg > SofaTap-macOS-arm64-minimal-sensitivity.dmg.sha256
+          shasum -a 256 -c SofaTap-macOS-arm64-minimal-sensitivity.dmg.sha256
+      - name: Upload development artifact, no public release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sofatap-macos-arm64-minimal-sensitivity
+          path: |
+            artifacts/SofaTap-macOS-arm64-minimal-sensitivity.dmg
+            artifacts/SofaTap-macOS-arm64-minimal-sensitivity.dmg.sha256
+            artifacts/BUILD-MANIFEST.json
+            artifacts/DEVELOPMENT-BUILD.txt
+            artifacts/MAC-POINTER-SENSITIVITY.md
+          if-no-files-found: error
+          retention-days: 14

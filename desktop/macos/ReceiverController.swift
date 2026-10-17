@@ -11,6 +11,7 @@ import Foundation
 /// All UI state lives on the main actor. Pipe readers and the writer run independently of AppKit.
 @MainActor
 final class ReceiverController: ObservableObject {
+    @Published var pointerSpeed = ReceiverPointerSpeed.load()
     @Published private(set) var state: ReceiverState?
     @Published var selectedHost: String?
     @Published private(set) var failure: String?
@@ -26,7 +27,7 @@ final class ReceiverController: ObservableObject {
     private var pipeReaders: [ReceiverPipeReader] = []
     private var stateReader: Task<Void, Never>?
     private var writer: Task<Void, Never>?
-    private var commandStream: AsyncStream<ReceiverCommand>.Continuation?
+    private var commandStream: AsyncStream<Data>.Continuation?
     private var watchdog: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
     private var copyTask: Task<Void, Never>?
@@ -67,7 +68,7 @@ final class ReceiverController: ObservableObject {
         let child = Process()
         let input = Pipe(), output = Pipe(), errors = Pipe()
         child.executableURL = helper
-        child.arguments = ["--native-ui"] + (CommandLine.arguments.contains("--dry-run") ? ["--dry-run"] : [])
+        child.arguments = ["--native-ui", "--pointer-speed", String(ReceiverPointerSpeed.normalize(pointerSpeed))] + (CommandLine.arguments.contains("--dry-run") ? ["--dry-run"] : [])
         #if SOFATAP_MAC_APP_STORE
         do {
             let directories = try ReceiverStoreDirectories.production()
@@ -103,14 +104,14 @@ final class ReceiverController: ObservableObject {
         try? output.fileHandleForWriting.close()
         try? errors.fileHandleForWriting.close()
 
-        let (commands, continuation) = AsyncStream<ReceiverCommand>.makeStream(bufferingPolicy: .bufferingOldest(16))
+        let (commands, continuation) = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingOldest(16))
         commandStream = continuation
         let stdin = input.fileHandleForWriting
         writer = Task.detached { [weak self] in
             do {
                 for await command in commands {
                     if Task.isCancelled { return }
-                    try stdin.write(contentsOf: command.line)
+                    try stdin.write(contentsOf: command)
                 }
             } catch {
                 await self?.pipeFailed(id: id)
@@ -209,9 +210,17 @@ final class ReceiverController: ObservableObject {
         }
     }
 
-    private func send(_ command: ReceiverCommand) {
+    func commitPointerSpeed() {
+        pointerSpeed = ReceiverPointerSpeed.normalize(pointerSpeed)
+        UserDefaults.standard.set(pointerSpeed, forKey: ReceiverPointerSpeed.defaultsKey)
+        sendLine(ReceiverPointerSpeed.commandLine(pointerSpeed))
+    }
+
+    private func send(_ command: ReceiverCommand) { sendLine(command.line) }
+
+    private func sendLine(_ line: Data) {
         guard let commandStream else { return }
-        if case .dropped = commandStream.yield(command) {
+        if case .dropped = commandStream.yield(line) {
             fail("接收组件暂时没有响应。请稍后重新检查。")
         }
     }

@@ -224,6 +224,36 @@ struct ReceiverView: View {
                     copyPairing: receiver.copyPairing,
                     quit: { NSApp.terminate(nil) }
                 )
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("指针速度")
+                        Spacer()
+                        Text(String(format: "%.2f×", receiver.pointerSpeed))
+                            .monospacedDigit()
+                    }
+                    Slider(value: $receiver.pointerSpeed, in: 0.25...4, step: 0.05,
+                           onEditingChanged: { editing in
+                               if !editing { receiver.commitPointerSpeed() }
+                           })
+                        .accessibilityLabel("指针速度倍率")
+                    HStack {
+                        Text("仅调整手机控制的指针移动速度。1× 为原版速度。")
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button("恢复 1×") {
+                            receiver.pointerSpeed = 1
+                            receiver.commitPointerSpeed()
+                        }
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(Palette.text)
+                .tint(Palette.mint)
+                .disabled(receiver.isStopping)
+                .padding(.horizontal, 28)
+                .padding(.bottom, 20)
+                .frame(maxWidth: 530)
                 if loginItem.isAvailable {
                     Group {
                         if loginItem.needsFirstLaunchConsent {

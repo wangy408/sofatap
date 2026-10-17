@@ -130,6 +130,55 @@ catch (InputInjectionException error) { Check(error.Message.StartsWith("input_un
 unavailableMacSink.StatusCode = "desktop_unavailable";
 Check(!unavailableMac.Available, "Mac denies a locked or missing desktop");
 
+PointerSpeedProtocolBoundaryChecks.Run(Check);
+foreach (var (value, expected) in new[] { (double.NaN, 1d), (double.PositiveInfinity, 1d),
+    (double.NegativeInfinity, 1d), (-5d, .25), (0d, .25), (99d, 4d), (1d, 1d), (2d, 2d) })
+    Check(MacInput.NormalizePointerSpeed(value) == expected, "pointer speed finite/default/clamp");
+foreach (var (json, expected) in new[] {
+    ("{\"type\":\"setPointerSpeed\",\"value\":2}", 2d),
+    ("{\"value\":0,\"type\":\"setPointerSpeed\"}", .25),
+    ("{\"type\":\"setPointerSpeed\",\"value\":99}", 4d) })
+    Check(NativeDesktopBridge.TryParsePointerSpeedCommand(json, out var speed) && speed == expected,
+        "strict private speed command normalizes a finite number");
+foreach (var invalid in new[] { "[]", "null", "{}", "{\"type\":\"setPointerSpeed\"}",
+    "{\"type\":\"setPointerSpeed\",\"value\":\"2\"}",
+    "{\"type\":\"setPointerSpeed\",\"value\":null}",
+    "{\"type\":\"setPointerSpeed\",\"value\":true}",
+    "{\"type\":\"setPointerSpeed\",\"value\":1e999}",
+    "{\"type\":\"setPointerSpeed\",\"value\":NaN}",
+    "{\"type\":\"setPointerSpeed\",\"value\":2,\"extra\":1}",
+    "{\"type\":\"setPointerSpeed\",\"value\":2,\"value\":3}",
+    "{\"type\":\"setPointerSpeed\",\"type\":\"quit\"}",
+    "{\"type\":\"refresh\",\"value\":2}" })
+    Check(!NativeDesktopBridge.TryParsePointerSpeedCommand(invalid, out _), "invalid private speed command rejected");
+var speedSink = new RecordingMacSink(); var speedMac = new MacInput(speedSink);
+speedMac.SetPointerSpeed(2);
+speedMac.Apply(new("", "move", Dx: 3, Dy: -2));
+Check(speedSink.Events[^1] is { DeltaX: 6, DeltaY: -4 }, "speed scales both move axes");
+speedMac.Apply(new("", "scroll", Dx: 3, Dy: -2));
+Check(speedSink.Events[^1] is { Kind: MacEventKind.Scroll, DeltaX: 3, DeltaY: -2 }, "speed does not scale scroll");
+speedMac.Apply(new("", "click", Button: "left"));
+Check(speedSink.Events[^2] is { MouseType: 1, ClickCount: 1 } && speedSink.Events[^1] is { MouseType: 2, ClickCount: 1 },
+    "speed leaves click down/up intact");
+speedMac.Apply(new("", "button", Button: "left", Down: true));
+speedMac.Apply(new("", "move", Dx: 2, Dy: 1));
+Check(speedSink.Events[^1] is { MouseType: 6, DeltaX: 4, DeltaY: 2 }, "drag uses same pointer multiplier");
+speedMac.Apply(new("", "button", Button: "left", Down: false));
+speedMac.SetPointerSpeed(.25);
+var beforeFraction = speedSink.Events.Count;
+for (var i = 0; i < 3; i++) speedMac.Apply(new("", "move", Dx: 1));
+Check(speedSink.Events.Count == beforeFraction, "slow speed retains fractional movement");
+speedMac.Apply(new("", "move", Dx: 1));
+Check(speedSink.Events[^1].DeltaX == 1, "slow fractional movement eventually posts");
+speedMac.SetPointerSpeed(1);
+speedMac.Apply(new("", "move", Dx: .4));
+speedMac.SetPointerSpeed(2);
+speedMac.Apply(new("", "move", Dx: .3));
+Check(speedSink.Events[^1].DeltaX == 1, "changing speed preserves existing fractional remainder");
+speedMac.SetPointerSpeed(1);
+speedMac.Apply(new("", "move", Dx: 3, Dy: -2));
+Check(speedSink.Events[^1] is { DeltaX: 3, DeltaY: -2 }, "reset restores original movement");
+
 var macSink = new RecordingMacSink(); var mac = new MacInput(macSink);
 mac.Apply(new("", "button", Button: "left", Down: true));
 mac.Apply(new("", "move", Dx: -150, Dy: -25));

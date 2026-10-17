@@ -30,6 +30,12 @@ public static class NativeDesktopBridge
             {
                 var line = await ReadLine(reader, stopped.Token);
                 if (line is null) break; // Closing the parent UI closes input and ends control.
+                if (TryParsePointerSpeedCommand(line, out var speed))
+                {
+                    server.SetPointerSpeed(speed);
+                    await State();
+                    continue;
+                }
                 var command = ParseCommand(line);
                 if (command == "quit") break;
                 if (command == "requestAccess" && OperatingSystem.IsLinux() && !dryRun) server.RequestLinuxAccess();
@@ -62,6 +68,27 @@ public static class NativeDesktopBridge
             catch (OperationCanceledException) when (stopped.IsCancellationRequested) { }
         }
     }
+    internal static bool TryParsePointerSpeedCommand(string line, out double speed)
+    {
+        speed = 1;
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return false;
+            var fields = document.RootElement.EnumerateObject().ToArray();
+            if (fields.Length != 2 || fields.Count(field => field.Name == "type") != 1
+                || fields.Count(field => field.Name == "value") != 1) return false;
+            var type = document.RootElement.GetProperty("type");
+            var value = document.RootElement.GetProperty("value");
+            if (type.ValueKind != JsonValueKind.String || type.GetString() != "setPointerSpeed"
+                || value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var parsed)
+                || !double.IsFinite(parsed)) return false;
+            speed = MacInput.NormalizePointerSpeed(parsed);
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
     internal static string ParseCommand(string line)
     {
         try

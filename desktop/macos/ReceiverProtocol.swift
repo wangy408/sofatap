@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import Darwin
 
 /// Same bounded desktop pairing contract as the phone. Copy never accepts TV or browser links.
@@ -129,6 +130,22 @@ struct ReceiverState: Decodable, Equatable, Sendable {
     func selectedHost(preserving current: String?) -> String? {
         if let current, pairings.contains(where: { $0.host == current }) { return current }
         return pairings.first?.host
+    }
+}
+
+enum ReceiverPointerSpeed {
+    static let defaultsKey = "pointerSpeedMultiplier"
+    static func normalize(_ value: Double) -> Double {
+        value.isFinite ? min(4, max(0.25, value)) : 1
+    }
+    static func load(from defaults: UserDefaults = .standard) -> Double {
+        guard let number = defaults.object(forKey: defaultsKey) as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite,
+              (0.25...4).contains(number.doubleValue) else { return 1 }
+        return number.doubleValue
+    }
+    static func commandLine(_ value: Double) -> Data {
+        Data("{\"type\":\"setPointerSpeed\",\"value\":\(normalize(value))}\n".utf8)
     }
 }
 

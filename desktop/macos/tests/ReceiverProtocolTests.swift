@@ -107,6 +107,25 @@ enum ReceiverProtocolTests {
             let value = try JSONSerialization.jsonObject(with: bytes) as! [String: String]
             check(value == ["type": command.rawValue], "only the explicit allowlisted command is sent")
         }
+        let suite = "Sofatap.PointerSpeed.Tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        check(ReceiverPointerSpeed.load(from: defaults) == 1, "missing speed defaults to original")
+        for dirty in ["2", true, -1.0, 5.0, Double.nan, Double.infinity] as [Any] {
+            defaults.set(dirty, forKey: ReceiverPointerSpeed.defaultsKey)
+            check(ReceiverPointerSpeed.load(from: defaults) == 1, "dirty saved speed defaults to original")
+        }
+        defaults.set(2.5, forKey: ReceiverPointerSpeed.defaultsKey)
+        check(ReceiverPointerSpeed.load(from: UserDefaults(suiteName: suite)!) == 2.5,
+              "saved speed loads in a new preferences instance")
+        for (input, expected) in [(Double.nan, 1.0), (Double.infinity, 1.0), (-1.0, 0.25), (8.0, 4.0), (1.0, 1.0)] {
+            check(ReceiverPointerSpeed.normalize(input) == expected, "speed finite/default/clamp")
+            let bytes = ReceiverPointerSpeed.commandLine(input)
+            let object = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
+            check(object.count == 2 && object["type"] as? String == "setPointerSpeed"
+                  && object["value"] as? Double == expected && bytes.last == 10,
+                  "speed uses strict locale-independent private JSON")
+        }
         print("PASS: \(checks) native launcher protocol checks (no UI, child process, network, or real input)")
     }
 

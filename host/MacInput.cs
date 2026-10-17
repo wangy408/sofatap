@@ -14,7 +14,16 @@ public sealed class MacInput : IInputInjector
     private readonly HashSet<uint> _buttons = [];
     private readonly Dictionary<ushort, MacEvent> _keys = [];
     private double _fractionX, _fractionY, _scrollX, _scrollY;
+    private double _pointerSpeed = 1;
     private int _attempted;
+
+    internal static double NormalizePointerSpeed(double value) => double.IsFinite(value) ? Math.Clamp(value, .25, 4) : 1;
+
+    public void SetPointerSpeed(double value)
+    {
+        lock (_gate) { _pointerSpeed = NormalizePointerSpeed(value); }
+    }
+
     private uint? _lastClickButton;
     private MacPoint _lastClickPosition;
     private double _lastClickTime;
@@ -53,7 +62,7 @@ public sealed class MacInput : IInputInjector
                 {
                     case "move":
                         CheckMouseOwnership();
-                        _fractionX += action.Dx; _fractionY += action.Dy;
+                        _fractionX += action.Dx * _pointerSpeed; _fractionY += action.Dy * _pointerSpeed;
                         var dx = (int)_fractionX; var dy = (int)_fractionY;
                         if (dx != 0 || dy != 0)
                         {
